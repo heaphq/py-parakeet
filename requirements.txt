@@ -2,3 +2,4 @@ parakeet-mlx
 sounddevice
 pynput
 numpy
+rumps  # optional: menu bar status icon (macOS)
