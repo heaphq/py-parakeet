@@ -131,6 +131,12 @@ run `./dev.sh` to auto-restart it on change.
   device. Check System Settings → Sound → Input.
 - **Slow first transcription:** the model warms up on first use; subsequent runs
   are fast.
+- **Menu bar icon doesn't appear:** macOS may gate it behind a permission
+  prompt — check *System Settings → Notifications* for your terminal / the
+  python binary and allow it, then restart the daemon. On MacBooks the icon can
+  also be hidden behind the notch when the menu bar is crowded; ⌘-drag the menu
+  bar items or quit a few to reveal it. (Set `PARAKEET_MENUBAR=0` to run without
+  it.)
 
 ## License
 
