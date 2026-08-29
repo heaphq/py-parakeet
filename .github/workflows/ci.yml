@@ -15,10 +15,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Only what the compile check and post_process tests need — no MLX model
-      # download, no portaudio. Fast and free on public repos.
+      # Enough to import parakeet_dictate and run the pure-logic tests (state
+      # machine, handlers) — sounddevice ships a bundled PortAudio, so no brew
+      # step. Still no MLX model download; parakeet_mlx is imported lazily.
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pynput pytest ruff
+        run: python -m pip install --upgrade pip pynput numpy sounddevice pytest ruff
 
       - name: Lint (ruff)
         run: ruff check .

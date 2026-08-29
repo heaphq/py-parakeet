@@ -69,6 +69,11 @@ STATE_ICONS = {
 }
 
 
+def icon_for(state):
+    """Menu bar glyph for a Dictation state (falls back to the ready icon)."""
+    return STATE_ICONS.get(state, STATE_ICONS["ready"])
+
+
 def log(*args):
     print(*args, flush=True)
 
@@ -304,7 +309,7 @@ if rumps is not None:
             self._apply(self.d.state)
 
         def _apply(self, state):
-            self.title = STATE_ICONS.get(state, STATE_ICONS["ready"])
+            self.title = icon_for(state)
 
 
 def _start_common(d):
