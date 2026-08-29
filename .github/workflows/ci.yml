@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest  # Apple Silicon; matches the tool's target platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only what the compile check and post_process tests need — no MLX model
+      # download, no portaudio. Fast and free on public repos.
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pynput pytest
+
+      - name: Compile check
+        run: |
+          python -c "import py_compile as c; \
+            c.compile('parakeet_dictate.py', doraise=True); \
+            c.compile('handlers.py', doraise=True)"
+
+      - name: Run tests
+        run: pytest -q
