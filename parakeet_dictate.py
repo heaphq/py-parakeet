@@ -124,21 +124,28 @@ class Dictation:
         self.lock = threading.Lock()
         self.model = None
         self.kb = keyboard.Controller()
-        # Coarse status for the menu bar; a plain string is fine to read across
-        # threads (updates are atomic and the menu bar only polls it).
+        # Coarse status for the menu bar. `on_state`, if set, is invoked on
+        # every change (from worker/hotkey threads) so the UI can update
+        # immediately instead of polling.
         self.state = "loading"
+        self.on_state = None
         # MLX's compute stream is thread-local, so the model must be loaded and
         # used on ONE thread (the worker); the hotkey callback just enqueues
         # audio. When the menu bar runs, that worker is a background thread so
         # rumps can own the main run loop.
         self.jobs = queue.Queue()
 
+    def _set_state(self, state):
+        self.state = state
+        if self.on_state:
+            self.on_state(state)
+
     def load_model(self):
         from parakeet_mlx import from_pretrained
 
         log(f"Loading Parakeet model: {MODEL} ...")
         self.model = from_pretrained(MODEL)
-        self.state = "ready"
+        self._set_state("ready")
         log("Model ready. Press the hotkey to dictate.")
 
     # ---- audio ----
@@ -167,7 +174,7 @@ class Dictation:
                 return
             self._close_stream()
             self.frames = []
-            self.state = "ready"
+            self._set_state("ready")
             cue("Basso")
             log("✕ canceled")
 
@@ -190,13 +197,13 @@ class Dictation:
             callback=self._audio_cb,
         )
         self.stream.start()
-        self.state = "recording"
+        self._set_state("recording")
         cue("Tink")
         log("● recording...")
 
     def _stop(self):
         self._close_stream()
-        self.state = "transcribing"
+        self._set_state("transcribing")
         cue("Pop")
         log("■ stopped, transcribing...")
         audio = (
@@ -220,7 +227,7 @@ class Dictation:
             try:
                 self._transcribe(audio)
             finally:
-                self.state = "ready"
+                self._set_state("ready")
 
     # ---- transcription + insertion ----
     def _transcribe(self, audio):
@@ -270,22 +277,34 @@ class Dictation:
 
 
 if rumps is not None:
+    from PyObjCTools import AppHelper
 
     class MenuBarApp(rumps.App):
         """Menu bar icon reflecting the daemon's state.
 
-        Polls d.state on the main run loop (via rumps.Timer) rather than having
-        worker threads touch AppKit — cross-thread UI mutation is unsafe.
+        Worker/hotkey threads push state changes here; AppKit is main-thread
+        only, so each update is marshaled onto the main run loop with
+        AppHelper.callAfter (which fires in common run-loop modes). A slow timer
+        reconciles the title in case a push is ever missed.
         """
 
         def __init__(self, dictation):
             super().__init__(STATE_ICONS["loading"], quit_button="Quit")
             self.d = dictation
-            self._timer = rumps.Timer(self._tick, 0.3)
+            self.d.on_state = self._push
+            self._apply(self.d.state)  # sync whatever state we're already in
+            self._timer = rumps.Timer(self._reconcile, 1.0)
             self._timer.start()
 
-        def _tick(self, _):
-            self.title = STATE_ICONS.get(self.d.state, STATE_ICONS["ready"])
+        def _push(self, state):
+            # Runs off the main thread; hop to the main loop before touching UI.
+            AppHelper.callAfter(self._apply, state)
+
+        def _reconcile(self, _):
+            self._apply(self.d.state)
+
+        def _apply(self, state):
+            self.title = STATE_ICONS.get(state, STATE_ICONS["ready"])
 
 
 def _start_common(d):
