@@ -14,7 +14,20 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
-exec .venv/bin/watchmedo auto-restart \
+PY=".venv/bin/python"
+
+# watchmedo ships with watchdog, a DEV-only dep not in requirements.txt.
+if ! "$PY" -c "import watchdog" 2>/dev/null; then
+    echo "dev mode needs 'watchdog' (a dev-only dependency). Install it with:" >&2
+    echo "    $PY -m pip install watchdog" >&2
+    echo "or install all dev extras:  $PY -m pip install -e '.[dev]'" >&2
+    exit 1
+fi
+
+# Invoke watchmedo via 'python -m', NOT the .venv/bin/watchmedo console script:
+# that script's shebang hardcodes an absolute interpreter path that breaks if
+# the project directory is renamed. 'python -m' uses the venv's python symlink.
+exec "$PY" -m watchdog.watchmedo auto-restart \
     --patterns="parakeet_dictate.py" \
     --signal SIGTERM \
-    -- .venv/bin/python parakeet_dictate.py
+    -- "$PY" parakeet_dictate.py
