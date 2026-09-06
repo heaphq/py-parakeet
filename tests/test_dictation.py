@@ -120,3 +120,86 @@ def test_cancel_while_recording_resets_and_discards(d, monkeypatch):
     assert d.frames == []  # discarded, not transcribed
     assert d.jobs.qsize() == 0  # nothing handed to the worker
     assert fake.stopped and fake.closed
+
+
+# ---- recovery from a PortAudio staled by sleep/wake ----
+
+
+def _flaky_input_stream(failures, stream):
+    """InputStream stub that raises PortAudioError the first `failures` times."""
+    calls = {"n": 0}
+
+    def factory(*a, **k):
+        calls["n"] += 1
+        if calls["n"] <= failures:
+            raise pd.sd.PortAudioError(
+                "Error opening InputStream: Internal PortAudio error", -9986
+            )
+        return stream
+
+    return factory, calls
+
+
+def test_start_retries_after_reinitializing_portaudio(d, monkeypatch):
+    # What happens after the Mac wakes: the first open fails with -9986, and
+    # a fresh PortAudio makes the retry succeed.
+    fake = _FakeStream()
+    factory, calls = _flaky_input_stream(1, fake)
+    monkeypatch.setattr(pd.sd, "InputStream", factory)
+    reinits = []
+    monkeypatch.setattr(pd, "reset_portaudio", lambda: reinits.append(True))
+
+    d.toggle()
+
+    assert reinits == [True]  # reinitialized between the two attempts
+    assert calls["n"] == 2
+    assert d.recording is True
+    assert d.state == "recording"
+    assert fake.started
+
+
+def test_start_failing_twice_stays_idle_without_raising(d, monkeypatch):
+    # The retry can't help (mic really is gone). toggle() runs on the pynput
+    # listener thread, so it must not raise — that would kill the hotkey.
+    factory, calls = _flaky_input_stream(2, _FakeStream())
+    monkeypatch.setattr(pd.sd, "InputStream", factory)
+    monkeypatch.setattr(pd, "reset_portaudio", lambda: None)
+
+    d.toggle()  # must not raise
+
+    assert calls["n"] == 2
+    assert d.recording is False  # not stuck "recording" with no stream
+    assert d.stream is None
+    assert d.state == "ready"
+    assert d.jobs.qsize() == 0
+
+
+def test_toggle_recovers_after_a_failed_start(d, monkeypatch):
+    # A failed start must leave the toggle usable: the next press starts
+    # recording rather than being read as a "stop".
+    factory, _ = _flaky_input_stream(2, _FakeStream())
+    monkeypatch.setattr(pd.sd, "InputStream", factory)
+    monkeypatch.setattr(pd, "reset_portaudio", lambda: None)
+    d.toggle()  # fails
+
+    fake = _FakeStream()
+    monkeypatch.setattr(pd.sd, "InputStream", lambda *a, **k: fake)
+    d.toggle()  # device is back
+
+    assert d.recording is True
+    assert d.state == "recording"
+    assert fake.started
+
+
+def test_close_stream_survives_a_device_that_vanished(d, monkeypatch):
+    class _DeadStream(_FakeStream):
+        def stop(self):
+            raise pd.sd.PortAudioError("Error stopping InputStream", -9986)
+
+    monkeypatch.setattr(pd.sd, "InputStream", lambda *a, **k: _DeadStream())
+    d.toggle()  # start recording
+    d.cancel()  # must not raise even though stop() fails
+
+    assert d.recording is False
+    assert d.stream is None  # dropped, so the next start opens a fresh one
+    assert d.state == "ready"

@@ -91,6 +91,20 @@ def cue(name):
         )
 
 
+def reset_portaudio():
+    """Re-initialize PortAudio so it re-discovers the audio hardware.
+
+    macOS tears down the CoreAudio HAL across sleep/wake, which leaves the
+    PortAudio instance created at import time stale: every InputStream open
+    then fails with -9986 (paInternalError) until the library is reloaded.
+    """
+    try:
+        sd._terminate()
+    except Exception as e:  # already terminated / mid-teardown: reinit anyway
+        log(f"portaudio terminate failed (continuing): {e}")
+    sd._initialize()
+
+
 def watch_handlers(interval=0.5):
     """Re-import handlers.py when it changes, keeping the model resident.
 
@@ -189,19 +203,52 @@ class Dictation:
             if self.stream:
                 self.stream.stop()
                 self.stream.close()
+        except sd.PortAudioError as e:
+            # A device that went away (sleep, unplugged) can fail to close.
+            # We drop the stream either way; the next _start reopens one.
+            log(f"audio stream close failed: {e}")
         finally:
             self.stream = None
 
-    def _start(self):
-        self.frames = []
-        self.recording = True
-        self.stream = sd.InputStream(
+    def _new_stream(self):
+        stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="float32",
             callback=self._audio_cb,
         )
-        self.stream.start()
+        stream.start()
+        return stream
+
+    def _open_stream(self):
+        """Start an input stream, healing a PortAudio staled by sleep/wake.
+
+        The first failure is expected after the Mac wakes, so retry once
+        against a freshly initialized PortAudio rather than making the user
+        restart the daemon.
+        """
+        try:
+            return self._new_stream()
+        except sd.PortAudioError as e:
+            log(f"audio device error ({e}); reinitializing PortAudio")
+        reset_portaudio()
+        return self._new_stream()
+
+    def _start(self):
+        self.frames = []
+        self.recording = True  # set first so the very first callback is kept
+        try:
+            self.stream = self._open_stream()
+        except Exception as e:
+            # Runs on the hotkey listener thread — an exception escaping here
+            # stops the listener, so the hotkey would die for the whole
+            # session. Report and stay idle instead.
+            self.stream = None
+            self.recording = False
+            self._set_state("ready")
+            cue("Basso")
+            log(f"⚠ could not open microphone: {e}")
+            return
         self._set_state("recording")
         cue("Tink")
         log("● recording...")
